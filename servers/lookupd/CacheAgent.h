@@ -41,17 +41,11 @@
 
 @interface CacheAgent : LUAgent
 {
-	struct {
-		LUArray *all;
-		syslock *lock;
-	} rootInitGroups;
-
-	struct {
+	struct
+	{
 		LUCache *cache;
 		unsigned int capacity;
 		time_t ttl;
-		time_t delta;
-		unsigned int freq;
 		BOOL validate;
 		BOOL enabled;
 	} cacheStore[NCACHE];
@@ -60,36 +54,20 @@
 		LUArray *all;
 		BOOL validate;
 		BOOL enabled;
-		syslock *lock;
 	} allStore[NCATEGORIES];
 
+	LUArray *rootInitGroups;
 	char *initgroupsUserName;
+
 	LUDictionary *stats;
+
+	syslock *cacheLock;
 
 	unsigned int lastSweep;
 	unsigned int sweepTime;
 }
 
-+ (int)cacheForKey:(char *)key category:(LUCategory)cat;
-
-- (void)setCapacity:(unsigned int)max forCategory:(LUCategory)cat;
-- (unsigned int)capacityForCategory:(LUCategory)cat;
-
-- (void)setTimeToLive:(time_t)timeout forCategory:(LUCategory)cat;
-- (time_t)timeToLiveForCategory:(LUCategory)cat;
-
-- (void)setCacheIsValidated:(BOOL)validate forCategory:(LUCategory)cat;
-- (BOOL)cacheIsValidatedForCategory:(LUCategory)cat;
-
-- (void)setCacheIsEnabled:(BOOL)enabled forCategory:(LUCategory)cat;
 - (BOOL)cacheIsEnabledForCategory:(LUCategory)cat;
-
-- (void)addTimeToLive:(time_t)delta
-	afterCacheHits:(unsigned int)freq
-	forCategory:(LUCategory)cat;
-
-- (time_t)cacheTimeToLiveDeltaForCategory:(LUCategory)cat;
-- (unsigned int)cacheTimeToLiveFrequencyForCategory:(LUCategory)cat;
 
 - (void)addObject:(LUDictionary *)item;
 - (void)removeObject:(LUDictionary *)item;

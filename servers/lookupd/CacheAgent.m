@@ -36,6 +36,7 @@
 #import "Root.h"
 #import "Thread.h"
 #import "CacheAgent.h"
+#import "Config.h"
 #import "LUPrivate.h"
 #import "LUCachedDictionary.h"
 #import <arpa/inet.h>
@@ -172,13 +173,6 @@ static BOOL shutdown_CacheAgent = NO;
 	expireAll = 0;
 	expireInitGroups = 0;
 	expireRootInitgroups = 0;
-
-	if (cat == LUCategoryGroup)
-	{
-		syslock_lock(rootInitGroups.lock);
-		syslock_lock(allStore[LUCategoryInitgroups].lock);
-	}
-	syslock_lock(allStore[cat].lock);
 	
 	len = [cache count];
 	for (i = len - 1; i >= 0; i--)
@@ -215,7 +209,7 @@ static BOOL shutdown_CacheAgent = NO;
 			}
 		}
 
-		all = rootInitGroups.all;
+		all = rootInitGroups;
 		if (all != nil)
 		{
 			if (expired > 0)
@@ -243,8 +237,8 @@ static BOOL shutdown_CacheAgent = NO;
 
 	if (expireRootInitgroups)
 	{
-		[rootInitGroups.all release];
-		rootInitGroups.all = nil;
+		[rootInitGroups release];
+		rootInitGroups = nil;
 	}
 
 	if (allStore[cat].all != nil)
@@ -267,13 +261,6 @@ static BOOL shutdown_CacheAgent = NO;
 	{
 		[allStore[cat].all release];
 		allStore[cat].all = nil;
-	}
-
-	syslock_unlock(allStore[cat].lock);
-	if (cat == LUCategoryGroup)
-	{
-		syslock_unlock(allStore[LUCategoryInitgroups].lock);
-		syslock_unlock(rootInitGroups.lock);
 	}
 	
 	if (expired > 0)
@@ -309,42 +296,6 @@ static BOOL shutdown_CacheAgent = NO;
 	return min;
 }
 
-#ifdef CACHETHREAD
-/*
- * Maintainence thread runs this loop
- */
--(void)sweep
-{
-	int i;
-	unsigned int snooze;
-	Thread *t;
-	
-	t = [Thread currentThread];
-	[t setState:ThreadStateActive];
-	
-	/* 60 seconds sleep at startup time */
-	snooze = 60; 
-	[t sleep:snooze];
-	if (shutdown_CacheAgent) [Thread threadExit];
-
-	/*
-	 * set snooze time to shortest TimeToLive
-	 * but not less than 60 seconds.
-	 */
-	snooze = [self minTimeToLive];
-	if (snooze < 60) snooze = 60;
-	
-	forever
-	{
-		[t sleep:snooze];
-		if (shutdown_CacheAgent) [Thread threadExit];
-		if ([t shouldTerminate]) [t terminateSelf];
-
-		for (i = 0; i < NCACHE; i++) [self ageCache:i];
-	}
-}
-#endif CACHETHREAD
-
 - (void)sweepCache
 {
 	int i;
@@ -357,21 +308,101 @@ static BOOL shutdown_CacheAgent = NO;
 	if (delta < sweepTime) return;
 	lastSweep = now.tv_sec;
 
+	syslock_lock(cacheLock);
 	for (i = 0; i < NCACHE; i++) [self ageCache:i];
+	syslock_unlock(cacheLock);
 }
 
 /*
  * Object creation, initilizations, and general stuff
  */
 
-- (CacheAgent *)init
+- (LUAgent *)initWithArg:(char *)arg
+{
+	return [self init];
+}
+
+- (void)setCacheIsValidated:(BOOL)validate forCategory:(LUCategory)cat
 {
 	int i;
-	char str[128];
-#ifdef CACHETHREAD
-	Thread *t;
-#endif
+
+	for (i = 0; i < NCACHE; i++)
+	{
+		if (cacheCategory[i] == cat)
+			cacheStore[i].validate = validate;
+	}
+
+	allStore[(unsigned int)cat].validate = validate;
+}
+
+- (void)setCapacity:(unsigned int)max forCategory:(LUCategory)cat
+{
+	int i;
+
+	for (i = 0; i < NCACHE; i++)
+	{
+		if (cacheCategory[i] == cat)
+			cacheStore[i].capacity = max;
+	}
+}
+
+- (void)setTimeToLive:(time_t)timeout forCategory:(LUCategory)cat
+{
+	int i;
+
+	for (i = 0; i < NCACHE; i++)
+	{
+		if (cacheCategory[i] == cat)
+			cacheStore[i].ttl = timeout;
+	}
+}
+
+- (time_t)timeToLiveForCategory:(LUCategory)cat
+{
+	int n;
+
+	n = cacheForCategory[cat];
+	if (n < 0) return 0;
+	return cacheStore[n].ttl;
+}
+
+- (void)setTimeToLive:(time_t)ttl forArray:(LUArray *)array
+{
+	LUDictionary *stamp;
+	int i, len;
+
+	if (array == nil) return;
+
+	len = [array validationStampCount];
+	for (i = 0; i < len; i++)
+	{
+		stamp = [array validationStampAtIndex:i];
+		if (stamp != nil) [stamp setTimeToLive:ttl];
+	}
+}
+
+- (void)setCacheIsEnabled:(BOOL)enabled forCategory:(LUCategory)cat
+{
+	int i;
+
+	for (i = 0; i < NCACHE; i++)
+	{
+		if (cacheCategory[i] == cat)
+			cacheStore[i].enabled = enabled;
+	}
+
+	allStore[(unsigned int)cat].enabled = enabled;
+}
+
+- (CacheAgent *)init
+{
+	int i, j;
+	char str[128], **order;
 	struct timeval now;
+	LUDictionary *global, *config;
+	BOOL gValidation, cValidation, gEnable, cEnable;
+	unsigned int gMax, cMax;
+	time_t gTTL, cTTL;
 
 	if (didInit) return self;
 
@@ -381,6 +412,7 @@ static BOOL shutdown_CacheAgent = NO;
 	lastSweep = now.tv_sec;
 	sweepTime = [self minTimeToLive];
 	if (sweepTime < 60) sweepTime = 60;
+	cacheLock = syslock_new(1);
 
 	for (i = 0; i < NCACHE; i++)
 	{
@@ -389,8 +421,6 @@ static BOOL shutdown_CacheAgent = NO;
 		[cacheStore[i].cache setBanner:str];
 		cacheStore[i].capacity = (unsigned int)-1;
 		cacheStore[i].ttl = 43200;
-		cacheStore[i].delta = 0;
-		cacheStore[i].freq = 0;
 		cacheStore[i].validate = YES;
 		cacheStore[i].enabled = NO;
 	}
@@ -400,23 +430,55 @@ static BOOL shutdown_CacheAgent = NO;
 		allStore[i].all = nil;
 		allStore[i].validate = YES;
 		allStore[i].enabled = NO;
-		allStore[i].lock = syslock_new(1);
 	}
 
-	rootInitGroups.all = nil;
-	rootInitGroups.lock = syslock_new(1);
+	rootInitGroups = nil;
 
 	initgroupsUserName = NULL;
 
-	stats = [[LUDictionary alloc] init];
-	[stats setBanner:"CacheAgent statistics"];
-	[stats setValue:"Cache" forKey:"information_system"];
+	global = [configManager configGlobal:configurationArray];
 
-#ifdef CACHETHREAD
-	t = [[Thread alloc] init];
-	[t setName:"Cache Sweeper"];
-	[t run:@selector(sweep) context:self];
-#endif
+	gValidation = [configManager boolForKey:"ValidateCache" dict:global default:YES];
+	gMax = [configManager intForKey:"CacheCapacity" dict:global default:-1];
+	if (gMax == 0) gMax = (unsigned int)-1;
+	gTTL = (time_t)[configManager intForKey:"TimeToLive" dict:global default:43200];
+
+	gEnable = NO;
+	order = [global valuesForKey:"LookupOrder"];
+	if (order != NULL)
+	{
+		for (i = 0; order[i] != NULL; i++)
+		{
+			if (streq(order[i], "Cache") || streq(order[i], "CacheAgent"))
+				gEnable = YES;
+		}
+	}
+
+	for (i = 0; i < NCATEGORIES; i++)
+	{	
+		config = [configManager configForCategory:i fromConfig:configurationArray];
+		cValidation = [configManager boolForKey:"ValidateCache" dict:config default:gValidation];
+		cMax = [configManager intForKey:"CacheCapacity" dict:config default:gMax];
+		if (cMax == 0) cMax = (unsigned int)-1;
+		cTTL = (time_t)[configManager intForKey:"TimeToLive" dict:config default:gTTL];
+
+		cEnable = gEnable;
+		order = [config valuesForKey:"LookupOrder"];
+		if (order != NULL)
+		{
+			cEnable = NO;
+			for (j = 0; order[j] != NULL; j++)
+			{
+				if (streq(order[j], "Cache") || streq(order[j], "Cache"))
+					cEnable = YES;
+			}
+		}
+
+		[self setCacheIsValidated:cValidation forCategory:(LUCategory)i];
+		[self setCacheIsEnabled:cEnable forCategory:(LUCategory)i];
+		[self setCapacity:cMax forCategory:(LUCategory)i];
+		[self setTimeToLive:cTTL forCategory:(LUCategory)i];
+	}
 
 	return self;
 }
@@ -444,10 +506,6 @@ static BOOL shutdown_CacheAgent = NO;
 
 	shutdown_CacheAgent = YES;
 
-#ifdef CACHETHREAD
-	[Thread releaseThread:[Thread threadWithName:"Cache Sweeper"]];
-#endif
-
 	for (i = 0; i < NCACHE; i++)
 	{
 		if (cacheStore[i].cache != nil) [cacheStore[i].cache release];
@@ -456,18 +514,14 @@ static BOOL shutdown_CacheAgent = NO;
 	for (i = 0; i < NCATEGORIES; i++)
 	{
 		if (allStore[i].all != nil) [allStore[i].all release];
-		if (allStore[i].lock != NULL) syslock_free(allStore[i].lock);
-		allStore[i].lock = NULL;
 	}
 
-	[rootInitGroups.all release];
-	if (rootInitGroups.lock != NULL) syslock_free(rootInitGroups.lock);
-	rootInitGroups.lock = NULL;
+	[rootInitGroups release];
 
 	if (initgroupsUserName != NULL) freeString(initgroupsUserName);
 	initgroupsUserName = NULL;
 
-	[stats release];
+	syslock_free(cacheLock);
 	
 	system_log(LOG_DEBUG, "Deallocated CacheAgent 0x%08x\n", (int)self);
 
@@ -476,50 +530,28 @@ static BOOL shutdown_CacheAgent = NO;
 	_sharedCacheAgent = nil;
 }
 
-- (const char *)serviceName
-{
-	return "Cache";
-}
-
 - (const char *)shortName
 {
 	return "Cache";
 }
 
-- (LUDictionary *)statistics
+- (BOOL)isValid:(LUDictionary *)item
 {
-	int i;
-	char key[256], str[256];
+	id agent;
 
-	for (i = 0; i < NCACHE; i++)
-	{
-		sprintf(key, "%s size", cacheName[i]);
-		sprintf(str, "%d", [cacheStore[i].cache count]);
-		[stats setValue:str forKey:key];
-	}
-
-	return stats;
-}
-
-- (void)resetStatistics
-{
-	[stats release];
-
-	stats = [[LUDictionary alloc] init];
-	[stats setBanner:"CacheAgent statistics"];
-	[stats setValue:"Cache" forKey:"information_system"];
-}
+	if (item == nil) return NO;
 		
-/*
- * Fetch objects from cache
- */
+	agent = [item agent];
+	if (agent == nil) return NO;
+
+	return [agent isValid: item];
+}
 
 - (LUDictionary *)postProcess:(LUDictionary *)item
 	cache:(unsigned int)n
 	key:(char *)key
 {
-	id agent;
-	time_t age, ttl, newttl;
+	time_t age, ttl;
 	unsigned int hits;
 
 	if (item == nil) return nil;
@@ -527,14 +559,7 @@ static BOOL shutdown_CacheAgent = NO;
 
 	if (cacheStore[n].validate)
 	{
-		agent = [item agent];
-		if (agent == nil)
-		{
-			[cacheStore[n].cache removeObject:item];
-			return nil;
-		}
-
-		if (![agent isValid:item])
+		if (![self isValid:item])
 		{
 			[cacheStore[n].cache removeObject:item];
 			return nil;
@@ -550,16 +575,6 @@ static BOOL shutdown_CacheAgent = NO;
 
 	hits = [item cacheHit];
 	if (cacheStore[n].validate) [item resetAge];
-
-	if ((cacheStore[n].freq > 0) &&
-		((hits % cacheStore[n].freq) == 0))
-	{
-		newttl = ttl + cacheStore[n].delta;
-
-		/* check for wrap-around */
-		if (newttl < ttl) newttl = (time_t)-1;
-		[item setTimeToLive:newttl];
-	}
 
 	/* Retain the object here.  Caller must release. */
 	[item retain];
@@ -597,12 +612,12 @@ static BOOL shutdown_CacheAgent = NO;
 
 	if (cat > NCATEGORIES) return nil;
 
-	syslock_lock(allStore[(unsigned int)cat].lock); // locked ((((
+	syslock_lock(cacheLock);
 
 	all = allStore[(unsigned int)cat].all;
 	if (all == nil)
 	{
-		syslock_unlock(allStore[(unsigned int)cat].lock); // ) unlocked
+		syslock_unlock(cacheLock);
 		return nil;
 	}
 
@@ -610,36 +625,22 @@ static BOOL shutdown_CacheAgent = NO;
 	if (!allStore[(unsigned int)cat].validate)
 	{
 		[all retain];
-		syslock_unlock(allStore[(unsigned int)cat].lock); // ) unlocked
+		syslock_unlock(cacheLock);
 		return all;
 	}
 
 	if ([self isArrayValid:all])
 	{
 		[all retain];
-		syslock_unlock(allStore[(unsigned int)cat].lock); // ) unlocked
+		syslock_unlock(cacheLock);
 		return all;
 	}
 
 	[all release];
 	allStore[(unsigned int)cat].all = nil;
-	syslock_unlock(allStore[(unsigned int)cat].lock); // ) unlocked
+
+	syslock_unlock(cacheLock);
 	return nil;
-}
-
-- (void)setTimeToLive:(time_t)ttl forArray:(LUArray *)array
-{
-	LUDictionary *stamp;
-	int i, len;
-
-	if (array == nil) return;
-
-	len = [array validationStampCount];
-	for (i = 0; i < len; i++)
-	{
-		stamp = [array validationStampAtIndex:i];
-		if (stamp != nil) [stamp setTimeToLive:ttl];
-	}
 }
 
 - (void)addArray:(LUArray *)array
@@ -661,62 +662,85 @@ static BOOL shutdown_CacheAgent = NO;
 	ttl = [self timeToLiveForCategory:cat];
 	[self setTimeToLive:ttl forArray:array];
 
-	syslock_lock(allStore[cat].lock);
+	syslock_lock(cacheLock);
 	if (allStore[cat].all != nil) [allStore[cat].all release];
 	allStore[cat].all = [array retain];
-	syslock_unlock(allStore[cat].lock);
+	syslock_unlock(cacheLock);
 }
 
 - (LUArray *)initgroupsForUser:(char *)name
 {
 	LUArray *all;
-	
+
+	syslock_lock(cacheLock);
+
 	if (streq(name, "root"))
 	{
-		syslock_lock(rootInitGroups.lock); // locked ((((
-		if (rootInitGroups.all == nil)
+		if (rootInitGroups == nil)
 		{
-			syslock_unlock(rootInitGroups.lock); // ) unlocked
+			syslock_unlock(cacheLock);
 			return nil;
 		}
 
 		if (!allStore[(unsigned int)LUCategoryInitgroups].validate)
 		{
-			[rootInitGroups.all retain];
-			syslock_unlock(rootInitGroups.lock); // ) unlocked
-			return rootInitGroups.all;
+			[rootInitGroups retain];
+			syslock_unlock(cacheLock);
+			return rootInitGroups;
 		}
 
-		if ([self isArrayValid:rootInitGroups.all])
+		if ([self isArrayValid:rootInitGroups])
 		{
-			[rootInitGroups.all retain];
-			syslock_unlock(rootInitGroups.lock); // ) unlocked
-			return rootInitGroups.all;
+			[rootInitGroups retain];
+			syslock_unlock(cacheLock);
+			return rootInitGroups;
 		}
 
-		[rootInitGroups.all release];
-		rootInitGroups.all = nil;
-		syslock_unlock(rootInitGroups.lock); // ) unlocked
+		[rootInitGroups release];
+		rootInitGroups = nil;
+		syslock_unlock(cacheLock);
 		return nil;
 	}
 
-	syslock_lock(allStore[(unsigned int)LUCategoryInitgroups].lock); // locked (((
-	if (initgroupsUserName == NULL)
+	if ((initgroupsUserName == NULL) || (name == NULL))
 	{
-		syslock_unlock(allStore[(unsigned int)LUCategoryInitgroups].lock); // unlocked )
+		syslock_unlock(cacheLock);
 		return nil;
 	}
 
 	if (strcmp(name, initgroupsUserName))
 	{
-		syslock_unlock(allStore[(unsigned int)LUCategoryInitgroups].lock); // unlocked )
+		syslock_unlock(cacheLock);
 		return nil;
 	}
 
-	all = [self allItemsWithCategory:LUCategoryInitgroups];
-	syslock_unlock(allStore[(unsigned int)LUCategoryInitgroups].lock); // unlocked )
+	all = allStore[(unsigned int)LUCategoryInitgroups].all;
+	if (all == nil)
+	{
+		syslock_unlock(cacheLock);
+		return nil;
+	}
 
-	return all;
+	/* Retain the array here.  Caller must release */
+	if (!allStore[(unsigned int)LUCategoryInitgroups].validate)
+	{
+		[all retain];
+		syslock_unlock(cacheLock);
+		return all;
+	}
+
+	if ([self isArrayValid:all])
+	{
+		[all retain];
+		syslock_unlock(cacheLock);
+		return all;
+	}
+
+	[all release];
+	allStore[(unsigned int)LUCategoryInitgroups].all = nil;
+
+	syslock_unlock(cacheLock);
+	return nil;
 }
 
 - (LUArray *)allGroupsWithUser:(char *)name
@@ -733,16 +757,15 @@ static BOOL shutdown_CacheAgent = NO;
 	ttl = [self timeToLiveForCategory:LUCategoryGroup];
 	[self setTimeToLive:ttl forArray:groups];
 
+	syslock_lock(cacheLock);
+
 	if (streq(name, "root"))
 	{
-		syslock_lock(rootInitGroups.lock);
-		if (rootInitGroups.all != nil) [rootInitGroups.all release];
-		rootInitGroups.all = [groups retain];
-		syslock_unlock(rootInitGroups.lock);
+		if (rootInitGroups != nil) [rootInitGroups release];
+		rootInitGroups = [groups retain];
+		syslock_unlock(cacheLock);
 		return;
 	}
-
-	syslock_lock(allStore[(unsigned int)LUCategoryInitgroups].lock);
 
 	if (initgroupsUserName != NULL) freeString(initgroupsUserName);
 	initgroupsUserName = copyString(name);
@@ -753,17 +776,15 @@ static BOOL shutdown_CacheAgent = NO;
 	}
 	allStore[(unsigned int)LUCategoryInitgroups].all = [groups retain];
 
-	syslock_unlock(allStore[(unsigned int)LUCategoryInitgroups].lock);
+	syslock_unlock(cacheLock);
 }
 
 - (LUDictionary *)cache:(unsigned int)n itemWithKey:(char *)key category:(LUCategory)cat
 {
 	LUDictionary *item;
  
-	syslock_lock(allStore[(unsigned int)cat].lock);
 	item = [cacheStore[n].cache objectForKey:key];
 	item = [self postProcess:item cache:n key:key];
-	syslock_unlock(allStore[(unsigned int)cat].lock);
 
 	return item;
 }
@@ -875,12 +896,10 @@ static BOOL shutdown_CacheAgent = NO;
 	values = [item valuesForKey:keyName];
 	if (values == NULL) return;
 
-	syslock_lock(allStore[(unsigned int)cat].lock);
 	[self freeSpace:1 inCache:cacheNum];
 	[item setTimeToLive:cacheStore[cacheNum].ttl];
 	[item setCacheHits:0];
 	[cacheStore[cacheNum].cache setObject:item forKeys:values];
-	syslock_unlock(allStore[(unsigned int)cat].lock);
 }
 
 - (void)addEthernetObject:(LUDictionary *)item
@@ -897,7 +916,6 @@ static BOOL shutdown_CacheAgent = NO;
 	values = [item valuesForKey:"en_address"];
 	if (values == NULL) return;
 
-	syslock_lock(allStore[(unsigned int)cat].lock);
 	[self freeSpace:1 inCache:cacheNum];
 	[item setTimeToLive:cacheStore[cacheNum].ttl];
 	[item setCacheHits:0];
@@ -909,7 +927,6 @@ static BOOL shutdown_CacheAgent = NO;
 		[cacheStore[cacheNum].cache setObject:item
 			forKey:[LUAgent canonicalEthernetAddress:values[i]]];
 	}
-	syslock_unlock(allStore[(unsigned int)cat].lock);
 }
 
 - (void)addService:(LUDictionary *)item
@@ -937,8 +954,6 @@ static BOOL shutdown_CacheAgent = NO;
 
 	numberCache = cacheStore[CServiceNumber].cache;
 	if (numberCache == nil) return;
-
-	syslock_lock(allStore[LUCategoryService].lock);
 
 	[self freeSpace:1 inCache:CServiceName];
 	[self freeSpace:1 inCache:CServiceNumber];
@@ -972,8 +987,6 @@ static BOOL shutdown_CacheAgent = NO;
 			[numberCache setObject:item forKey:str];
 		}
 	}
-
-	syslock_unlock(allStore[LUCategoryService].lock);
 }
 
 - (void)addObject:(LUDictionary *)item
@@ -981,6 +994,8 @@ static BOOL shutdown_CacheAgent = NO;
 	LUCategory cat;
 
 	if (item == nil) return;
+
+	syslock_lock(cacheLock);
 
 	cat = [item category];
 	switch (cat)
@@ -1036,6 +1051,8 @@ static BOOL shutdown_CacheAgent = NO;
 			break;
 		default: break;
 	}
+
+	syslock_unlock(cacheLock);
 }
 
 /*
@@ -1049,7 +1066,8 @@ static BOOL shutdown_CacheAgent = NO;
 	if (item == nil) return;
 
 	cat = [item category];
-	syslock_lock(allStore[(unsigned int)cat].lock);
+	syslock_lock(cacheLock);
+
 	switch (cat)
 	{
 		case LUCategoryUser:
@@ -1104,19 +1122,27 @@ static BOOL shutdown_CacheAgent = NO;
 		default: break;
 	}
 
-	syslock_unlock(allStore[(unsigned int)cat].lock);
+	syslock_unlock(cacheLock);
+}
+
+- (void)reset
+{
+	syslock_lock(cacheLock);
+	[configurationArray release];
+	generation = [configManager generation];
+	configurationArray = [configManager config];
+	syslock_unlock(cacheLock);
+
+	[self flushCache];
 }
 
 - (void)flushCache
 {
 	int i;
 
-	for (i = 0; i < NCATEGORIES; i++) syslock_lock(allStore[i].lock);
+	syslock_lock(cacheLock);
 
-	for (i = 0; i < NCACHE; i++)
-	{
-		[cacheStore[i].cache empty];
-	}
+	for (i = 0; i < NCACHE; i++) [cacheStore[i].cache empty];
 
 	for (i = 0; i < NCATEGORIES; i++)
 	{
@@ -1128,20 +1154,19 @@ static BOOL shutdown_CacheAgent = NO;
 			if (initgroupsUserName != NULL) freeString(initgroupsUserName);
 			initgroupsUserName = NULL;
 		}
-		syslock_unlock(allStore[i].lock);
 	}
 
-	syslock_lock(rootInitGroups.lock);
-	if (rootInitGroups.all != nil) [rootInitGroups.all release];
-	rootInitGroups.all = nil;
-	syslock_unlock(rootInitGroups.lock);
+	if (rootInitGroups != nil) [rootInitGroups release];
+	rootInitGroups = nil;
+
+	syslock_unlock(cacheLock);
 }
 
 - (void)flushCacheForCategory:(LUCategory)cat
 {
 	unsigned int i;
 
-	syslock_lock(allStore[(unsigned int)cat].lock);
+	syslock_lock(cacheLock);
 
 	for (i = 0; i < NCACHE; i++)
 	{
@@ -1155,92 +1180,18 @@ static BOOL shutdown_CacheAgent = NO;
 		allStore[i].all = nil;
 	}
 
-	syslock_unlock(allStore[(unsigned int)cat].lock);
-
 	if (cat == LUCategoryInitgroups)
 	{
-		syslock_lock(rootInitGroups.lock);
-		if (rootInitGroups.all != nil) [rootInitGroups.all release];
-		rootInitGroups.all = nil;
-		syslock_unlock(rootInitGroups.lock);
+		if (rootInitGroups != nil) [rootInitGroups release];
+		rootInitGroups = nil;
 	}
+
+	syslock_unlock(cacheLock);
 }
 
 /*
  * Cache management
  */
-
-- (void)setCapacity:(unsigned int)max forCategory:(LUCategory)cat
-{
-	int i;
-
-	for (i = 0; i < NCACHE; i++)
-	{
-		if (cacheCategory[i] == cat)
-			cacheStore[i].capacity = max;
-	}
-}
-
-- (unsigned int)capacityForCategory:(LUCategory)cat
-{
-	int n;
-
-	n = cacheForCategory[cat];
-	if (n < 0) return 0;
-	return cacheStore[n].capacity;
-}
-
-- (void)setTimeToLive:(time_t)timeout forCategory:(LUCategory)cat
-{
-	int i;
-
-	for (i = 0; i < NCACHE; i++)
-	{
-		if (cacheCategory[i] == cat)
-			cacheStore[i].ttl = timeout;
-	}
-}
-
-- (time_t)timeToLiveForCategory:(LUCategory)cat
-{
-	int n;
-
-	n = cacheForCategory[cat];
-	if (n < 0) return 0;
-	return cacheStore[n].ttl;
-}
-
-- (void)setCacheIsValidated:(BOOL)validate forCategory:(LUCategory)cat
-{
-	int i;
-
-	for (i = 0; i < NCACHE; i++)
-	{
-		if (cacheCategory[i] == cat)
-			cacheStore[i].validate = validate;
-	}
-
-	allStore[(unsigned int)cat].validate = validate;
-}
-
-- (BOOL)cacheIsValidatedForCategory:(LUCategory)cat
-{
-	if (cat > NCATEGORIES) return NO;
-	return allStore[(unsigned int)cat].validate;
-}
-
-- (void)setCacheIsEnabled:(BOOL)enabled forCategory:(LUCategory)cat
-{
-	int i;
-
-	for (i = 0; i < NCACHE; i++)
-	{
-		if (cacheCategory[i] == cat)
-			cacheStore[i].enabled = enabled;
-	}
-
-	allStore[(unsigned int)cat].enabled = enabled;
-}
 
 - (BOOL)cacheIsEnabledForCategory:(LUCategory)cat
 {
@@ -1248,54 +1199,43 @@ static BOOL shutdown_CacheAgent = NO;
 	return allStore[(unsigned int)cat].enabled;
 }
 
-- (void)addTimeToLive:(time_t)delta
-	afterCacheHits:(unsigned int)freq
-	forCategory:(LUCategory)cat
-{
-	int i;
-
-	for (i = 0; i < NCACHE; i++)
-	{
-		if (cacheCategory[i] == cat)
-		{
-			cacheStore[i].delta = delta;
-			cacheStore[i].freq = freq;
-		}
-	}
-}
-
-- (time_t)cacheTimeToLiveDeltaForCategory:(LUCategory)cat
-{
-	int n;
-
-	n = cacheForCategory[cat];
-	if (n < 0) return 0;
-	return cacheStore[n].delta;
-}
-
-- (unsigned int)cacheTimeToLiveFrequencyForCategory:(LUCategory)cat
-{
-	int n;
-
-	n = cacheForCategory[cat];
-	if (n < 0) return 0;
-	return cacheStore[n].freq;
-}
-
 - (BOOL)containsObject:(id)obj
 {
 	int i;
- 
+
+	syslock_lock(cacheLock);
+
 	if ([obj isMemberOf:[LUArray class]])
 	{
 		for (i = 0; i < NCATEGORIES; i++)
-		if (obj == allStore[i].all) return YES;
-		if (obj == rootInitGroups.all) return YES;
+		{
+			if (obj == allStore[i].all)
+			{
+				syslock_unlock(cacheLock);
+				return YES;
+			}
+		}
+
+		if (obj == rootInitGroups)
+		{
+			syslock_unlock(cacheLock);
+			return YES;
+		}
+
+		syslock_unlock(cacheLock);
 		return NO;
 	}
 
 	for (i = 0; i < NCACHE; i++)
-		if ([cacheStore[i].cache containsObject:obj]) return YES;
+	{
+		if ([cacheStore[i].cache containsObject:obj])
+		{
+			syslock_unlock(cacheLock);
+			return YES;
+		}
+	}
+
+	syslock_unlock(cacheLock);
 
 	return NO;
 }
@@ -1305,11 +1245,16 @@ static BOOL shutdown_CacheAgent = NO;
 	category:(LUCategory)cat
 {
 	int n;
+	LUDictionary *item;
 
 	n = [CacheAgent cacheForKey:key category:cat];
 	if (n < 0 || n > NCACHE) return nil;
 
-	return [self cache:n itemWithKey:val category:cat];
+	syslock_lock(cacheLock);
+	item = [self cache:n itemWithKey:val category:cat];
+	syslock_unlock(cacheLock);
+
+	return item;
 }
 
 @end
