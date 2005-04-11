@@ -3,32 +3,32 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 2003 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
 
 #include <stdlib.h>
-#include <syslog.h>
+#include <asl.h>
 #include <dirent.h>
 #include <sys/param.h>
 #include <sys/event.h>
 #include <sys/fcntl.h>
+#include <unistd.h>
 #include "file_watcher.h"
 #include "daemon.h"
 
@@ -91,7 +91,7 @@ file_watcher_add_kq(file_watcher_t *f)
 	if (f->kqident != IDENT_INVAL) return;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_add_kq(%u, %s)", f->w->wid, f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_add_kq(%u, %s)", f->w->wid, f->path);
 #endif
 
 	event.ident = open(f->path, O_EVTONLY, 0);
@@ -123,7 +123,7 @@ file_watcher_remove_kq(file_watcher_t *f)
 	if (f->kqident == IDENT_INVAL) return;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_remove_kq(%u, %s)", f->w->wid, f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_remove_kq(%u, %s)", f->w->wid, f->path);
 #endif
 
 	event.ident = f->kqident;
@@ -136,7 +136,7 @@ file_watcher_remove_kq(file_watcher_t *f)
 	status = kevent(kq, &event, 1, NULL, 0, NULL);
 	if (status != 0)
 	{
-		log_message(LOG_ERR, "EV_DELETE failed for file watcher %u", f->w->wid);
+		log_message(ASL_LEVEL_ERR, "EV_DELETE failed for file watcher %u", f->w->wid);
 	}
 
 	close(f->kqident);
@@ -287,7 +287,7 @@ file_watcher_update_dir(file_watcher_t *f, w_event_t **delta)
 	uint32_t do_notify;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_update_dir(%u, %s)", f->w->wid, f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_update_dir(%u, %s)", f->w->wid, f->path);
 #endif
 
 	dp = opendir(f->path);
@@ -409,7 +409,7 @@ file_watcher_remove(file_watcher_t *f)
 	char *pdir, *p;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_remove(%u, %s)", f->w->wid, f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_remove(%u, %s)", f->w->wid, f->path);
 #endif
 
 	if (f == NULL) return 0;
@@ -484,7 +484,7 @@ file_watcher_remove(file_watcher_t *f)
 	}
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_remove %s - removed", f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_remove %s - removed", f->path);
 #endif
 
 	f->ftype = FS_TYPE_NONE;
@@ -502,7 +502,7 @@ file_watcher_update_link(file_watcher_t *f, w_event_t **delta)
 	file_watcher_t *t;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_update_link(%u, %s)", f->w->wid, f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_update_link(%u, %s)", f->w->wid, f->path);
 #endif
 
 	n = readlink(f->path, lpath, MAXPATHLEN + 1);
@@ -667,7 +667,7 @@ file_watcher_update(file_watcher_t *f, uint32_t flags, uint32_t level)
 	int32_t status, i, do_notify, did_remove;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_update(%u, 0x%08x, %s)", f->w->wid, flags, f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_update(%u, 0x%08x, %s)", f->w->wid, flags, f->path);
 #endif
 
 	if (f == NULL) return 0;
@@ -809,7 +809,7 @@ file_watcher_new(const char *p)
 	if (w == NULL) return NULL;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_new(%u, %s)", w->wid, p);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_new(%u, %s)", w->wid, p);
 #endif
 
 	f = (file_watcher_t *)calloc(1, sizeof(file_watcher_t));
@@ -844,7 +844,7 @@ file_watcher_new(const char *p)
 	file_watcher_update(f, 0, 0);
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_new: %s type %u trigger %u", p, f->ftype, w->wid);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_new: %s type %u trigger %u", p, f->ftype, w->wid);
 #endif
 
 	return w;
@@ -860,7 +860,7 @@ file_watcher_trigger(watcher_t *w, uint32_t flags, uint32_t level)
 	f = (file_watcher_t *)w->sub;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_trigger: %s type %u wid %u flags 0x%08x", f->path, f->ftype, w->wid, flags);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_trigger: %s type %u wid %u flags 0x%08x", f->path, f->ftype, w->wid, flags);
 #endif
 
 	return file_watcher_update(f, flags, level);
@@ -878,7 +878,7 @@ file_watcher_free(watcher_t *w)
 	f = (file_watcher_t *)w->sub;
 
 #ifdef DEBUG
-	log_message(LOG_ERR, "file_watcher_free(%u, %s)", f->w->wid, f->path);
+	log_message(ASL_LEVEL_DEBUG, "file_watcher_free(%u, %s)", f->w->wid, f->path);
 #endif
 
 	if (f->path != NULL) free(f->path);

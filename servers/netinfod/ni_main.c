@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -112,27 +111,8 @@ extern void dblock_catcher(void);
 
 extern void waitforparent(void);
 
-static int standalone = 0;
-
 char **Argv;	/* used to set the information displayed with ps(1) */
 int    Argc;
-
-static void
-closeall(void)
-{
-	int i;
-
-	for (i = getdtablesize() - 1; i >= 0; i--) close(i);
-
-	/*
-	 * We keep 0, 1 & 2 open to avoid using them. If we didn't, a
-	 * library routine might do a printf to our descriptor and screw
-	 * us up.
-	 */
-	open("/dev/null", O_RDWR, 0);
-	dup(0);
-	dup(0);
-}
 
 void
 catch_sighup(void)
@@ -211,12 +191,6 @@ main(int argc, char *argv[])
 
 	if (argc != 1) usage(myname);
 
-	if (debug == 0)
-	{
-		closeall();
-		if (standalone == 1) daemon(1, 1);
-	}
-
 	db_tag = malloc(strlen(argv[0]) + 1);
 	strcpy(db_tag, argv[0]);
 
@@ -294,7 +268,8 @@ main(int argc, char *argv[])
 		exit(status);
 	}
 
-	setproctitle("netinfod %s (%s)", db_tag, i_am_clone ? "clone" : "master");
+	if (standalone == 0)
+		setproctitle("netinfod %s (%s)", db_tag, i_am_clone ? "clone" : "master");
 
 	if (i_am_clone)
 	{
@@ -316,8 +291,11 @@ main(int argc, char *argv[])
 		initialize_readall_proxies(-1 == max_readall_proxies ?
 			MAX_READALL_PROXIES : max_readall_proxies);
 
-		system_log(LOG_DEBUG, "starting notify thread");
-		(void) notify_start();
+		if (strcmp(db_tag, "local"))
+		{
+			system_log(LOG_DEBUG, "starting notify thread");
+			notify_start();
+		}
 	}
 
 	/* Shutdown gracefully after this point */

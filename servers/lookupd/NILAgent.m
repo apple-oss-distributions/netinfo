@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -40,6 +39,8 @@
 #import "Config.h"
 #import <time.h>
 #import <arpa/inet.h>
+#import <string.h>
+#import <NetInfo/dsutil.h>
 
 #define DefaultTimeToLive 60
 
@@ -83,7 +84,7 @@ static NILAgent *_sharedNILAgent = nil;
 	_sharedNILAgent = [_sharedNILAgent init];
 	if (_sharedNILAgent == nil) return nil;
 
-	system_log(LOG_DEBUG, "Allocated NILAgent 0x%08x\n", (int)_sharedNILAgent);
+	system_log(LOG_DEBUG, "Allocated NILAgent 0x%08x", (int)_sharedNILAgent);
 
 	return _sharedNILAgent;
 }
@@ -95,7 +96,7 @@ static NILAgent *_sharedNILAgent = nil;
 
 - (void)dealloc
 {
-	system_log(LOG_DEBUG, "Deallocated NILAgent 0x%08x\n", (int)self);
+	system_log(LOG_DEBUG, "Deallocated NILAgent 0x%08x", (int)self);
 	[super dealloc];
 	_sharedNILAgent = nil;
 }
@@ -107,8 +108,10 @@ static NILAgent *_sharedNILAgent = nil;
 
 	if (item == nil) return NO;
 
-	now = time(0);
 	bestBefore = [item unsignedLongForKey:"_lookup_NIL_best_before"];
+	if (bestBefore == -1) return YES;
+
+	now = time(0);
 
 	if (now > bestBefore) return NO;
 	return YES;
@@ -121,9 +124,16 @@ static NILAgent *_sharedNILAgent = nil;
 
 	[item setNegative:YES];
 
-	best_before = [item dob] + timeToLive;
-	sprintf(scratch, "%lu", best_before);
-	[item setValue:scratch forKey:"_lookup_NIL_best_before"];
+	if (timeToLive == 0)
+	{
+		[item setValue:"-1" forKey:"_lookup_NIL_best_before"];
+	}
+	else
+	{
+		best_before = [item dob] + timeToLive;
+		sprintf(scratch, "%lu", best_before);
+		[item setValue:scratch forKey:"_lookup_NIL_best_before"];
+	}
 
 	[item setValue:"NIL" forKey:"_lookup_agent"];
 	[item setValue:"NIL" forKey:"_lookup_info_system"];
@@ -143,7 +153,33 @@ static NILAgent *_sharedNILAgent = nil;
 	value:(char *)val
 	category:(LUCategory)cat
 {
-	return [self itemWithKey:key value:val];
+	LUDictionary *item;
+
+	if (cat == LUCategoryHost)
+	{
+		if (streq(key, "namev46"))
+		{
+			item = [self itemWithKey:"name" value:val];
+			[item setValue:"0.0.0.0" forKey:"ip_address"];
+			[item setValue:"::0" forKey:"ipv6_address"];
+			return item;
+		}
+		else if (streq(key, "namev6"))
+		{
+			item = [self itemWithKey:"name" value:val];
+			[item setValue:"::0" forKey:"ipv6_address"];
+			return item;
+		}
+		else if (streq(key, "name"))
+		{
+			item = [self itemWithKey:"name" value:val];
+			[item setValue:"0.0.0.0" forKey:"ip_address"];
+			return item;
+		}
+	}
+
+	item = [self itemWithKey:key value:val];
+	return item;
 }
 
 - (LUArray *)allItemsWithCategory:(LUCategory)cat

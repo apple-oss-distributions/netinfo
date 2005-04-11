@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -102,20 +101,29 @@ ni_validate_dir(void *handle, ni_object *obj, int complain)
 {
 	ni_proplist *pl;
 	ni_index i;
-	
-	if ((NH(handle)->user != NULL) &&
-		(ni_name_match(NH(handle)->user, ACCESS_USER_SUPER)))
+
+	pl = &obj->nio_props;
+	for (i = 0; i < pl->nipl_len; i++)
+	{
+		if (ni_name_match(pl->nipl_val[i].nip_name, LOCK_DIR_KEY)) 
+		{
+			system_log(LOG_DEBUG, "Denied access to locked directory %d", obj->nio_id.nii_object);
+			return NI_RDONLY;
+		}
+	}
+
+	if ((NH(handle)->user != NULL) && (ni_name_match(NH(handle)->user, ACCESS_USER_SUPER)))
 	{
 		auth_count[WGOOD]++;
 		if (!i_am_clone)
 		{
 			system_log(LOG_DEBUG,
-				"Allowing superuser %s to modify directory %d",
-				NH(handle)->user, obj->nio_id.nii_object);
+					   "Allowing superuser %s to modify directory %d",
+					   NH(handle)->user, obj->nio_id.nii_object);
 		}
 		return NI_OK;
 	}
-
+	
 	pl = &obj->nio_props;
 	for (i = 0; i < pl->nipl_len; i++)
 	{
@@ -144,8 +152,7 @@ ni_validate_name(void *handle, ni_object *obj, ni_index prop_index)
 	ni_name propkey;
 	ni_index i;
 
-	if ((NH(handle)->user != NULL) &&
-		(ni_name_match(NH(handle)->user, ACCESS_USER_SUPER)))
+	if ((NH(handle)->user != NULL) && (ni_name_match(NH(handle)->user, ACCESS_USER_SUPER)))
 	{
 		auth_count[WGOOD]++;
 		if (!i_am_clone)
@@ -1011,6 +1018,8 @@ ni_writeprop(void *handle, ni_id *id, ni_index prop_index, ni_namelist values)
 
 	/* check for directory access */
 	status = ni_validate_dir(handle, obj, 0);
+	if (status == NI_RDONLY) return status;
+
 	if (status != NI_OK)
 	{
 		/* no directory access - check for access to this property */

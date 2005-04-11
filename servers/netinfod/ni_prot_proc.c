@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -60,6 +59,7 @@
 #include <sys/stat.h>
 #include <rpc/rpc.h>
 #include <rpc/pmap_clnt.h>
+#include <rpc/pmap_prot.h>
 
 #ifdef _OS_NEXT_
 /* Support the old rpcgen, which doesn't append the _svc suffix
@@ -122,12 +122,12 @@ CLIENT *svctcp_getclnt(SVCXPRT *xprt);
 #define RPARENT_CATCH_SLEEP_SECONDS 2
 
 /*
- * Ping timeout is 1/2 second per try, with 10 tries.  Total timeout is 5 seconds.
+ * Ping timeout is 1/2 second per try, with 3 tries.  Total timeout is 2 seconds.
  */
  
 #define PING_TIMEOUT_SEC  0 
 #define PING_TIMEOUT_USEC 500000
-#define PING_CALL_SEC  5 
+#define PING_CALL_SEC  2 
 #define PING_CALL_USEC 0
 
 /* Number of minutes to force between attempts to see if we are still root */
@@ -1821,9 +1821,9 @@ add_broadcast_binding(ni_name server_tag, ni_name client_tag,
 		if ((l->interface[i].flags & IFF_UP) == 0) continue;
 		if (l->interface[i].flags & IFF_LOOPBACK)
 		{
-			if (l->count == 1)
+			if ((l->count == 1) && (standalone == 0))
 			{
-				/* Special case: include loopback if it is the only interface */
+				/* Special case: include loopback if NOT standalone and it is the only interface */
 				add_binding_entry(l->interface[i].addr, server_tag, l->interface[i].addr, client_tag, addrs, stuff, naddrs);
 			}
 		}
@@ -2409,19 +2409,19 @@ bind_to_parent(struct in_addr *addrs, ni_rparent_stuff *stuff, unsigned int nadd
 
 		if (sys_is_my_broadcast(&(addrs[i]))) continue;
 
-		if (ni_ping(addrs[i].s_addr, stuff->bindings[i].server_tag))
+		stat = ni_ping(addrs[i].s_addr, stuff->bindings[i].server_tag);
+		if (stat == RPC_SUCCESS)
 		{
 			ni_name_free(&(res->ni_rparent_res_u.binding.tag));
 			res->ni_rparent_res_u.binding.tag = ni_name_dup(stuff->bindings[i].server_tag);
 			res->ni_rparent_res_u.binding.addr = addrs[i].s_addr;
 
-			system_log(LOG_INFO, "Anonymous binding to %s/%s",
-				inet_ntoa(addrs[i]), stuff->bindings[i].server_tag);
+			system_log(LOG_INFO, "Anonymous binding to %s/%s", inet_ntoa(addrs[i]), stuff->bindings[i].server_tag);
 
 			res->status = NI_OK;
-			stat = RPC_SUCCESS;
 			goto binding_done;
 		}
+		else if (stat == RPC_SYSTEMERROR) break;
 	}
 
 	/*
@@ -2641,7 +2641,7 @@ _ni_rparent_2_svc(void *arg, struct svc_req *req)
 	 */
 	if (res.status == NI_OK)
 	{
-		if (ni_ping(paddr, res.ni_rparent_res_u.binding.tag))
+		if (ni_ping(paddr, res.ni_rparent_res_u.binding.tag) == RPC_SUCCESS)
 		{
 			/*
 			 * The address is stuffed into an unsigned long, 
@@ -3242,6 +3242,106 @@ _ni_resync_2_svc(
 }
 
 /*
+ * Find the mapped port for program,version.
+ * Calls the pmap service remotely to do the lookup.
+ * Returns 0 if no map exists.
+ */
+static u_short
+ni_ping_pmap_getport(struct sockaddr_in *address, unsigned int program, unsigned int version, unsigned int protocol, int *err)
+{
+	u_short port = 0;
+	int sock = -1;
+	int errno_saved;
+	CLIENT *client;
+	struct pmap parms;
+	struct timeval tv, total;
+
+	tv.tv_sec = PING_TIMEOUT_SEC;
+	tv.tv_usec = PING_TIMEOUT_USEC;
+	
+	total.tv_sec = PING_CALL_SEC;
+	total.tv_usec = PING_CALL_USEC;
+	
+	socket_lock();
+	sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	errno_saved = errno;
+	socket_unlock();
+	if (sock < 0)
+	{
+		syslog(LOG_DEBUG, "ni_ping_pmap_getport: couldn't get socket - %s", strerror(errno_saved));
+		*err = RPC_SYSTEMERROR;
+		return 0;
+	}
+
+	address->sin_port = htons(PMAPPORT);
+	client = clntudp_bufcreate(address, PMAPPROG, PMAPVERS, tv, &sock, RPCSMALLMSGSIZE, RPCSMALLMSGSIZE);
+	if (client == NULL)
+	{
+		syslog(LOG_DEBUG, "ni_ping_pmap_getport: %s", clnt_spcreateerror("clntudp_bufcreate"));
+		socket_lock();
+		close(sock);
+		socket_unlock();
+		*err = RPC_FAILED;
+		return 0;
+	}
+
+	parms.pm_prog = program;
+	parms.pm_vers = version;
+	parms.pm_prot = protocol;
+	parms.pm_port = 0;  /* not needed or used */
+
+	*err = CLNT_CALL(client, PMAPPROC_GETPORT, (void *)xdr_pmap, &parms, (void *)xdr_u_short, &port, total);
+	if ((*err == RPC_SUCCESS) && (port == 0)) *err = RPC_PROGNOTREGISTERED;
+
+	socket_lock();
+	clnt_destroy(client);
+	close(sock);
+	socket_unlock();
+
+	address->sin_port = 0;
+
+	return port;
+}
+
+int
+ni_ping_socket_open(struct sockaddr_in *raddr, int prog, int vers, int *err)
+{
+	int sock;
+	int errno_saved;
+	u_short port;
+
+	/*
+	 * If no port number given ask the pmap for one
+	 */
+	if (raddr->sin_port == 0)
+	{
+		port = ni_ping_pmap_getport(raddr, prog, vers, IPPROTO_UDP, err);
+		if (port == 0)
+		{
+			syslog(LOG_DEBUG, "ni_ping_socket_open: %s", clnt_spcreateerror("pmap_getport failed"));
+			return -1;
+		}
+
+		raddr->sin_port = htons(port);
+	}
+	
+	socket_lock();
+	sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	errno_saved = errno;
+	socket_unlock();
+
+	if (sock < 0)
+	{
+		syslog(LOG_WARNING, "ni_ping_socket_open: couldn't get socket - %s", strerror(errno_saved));
+		*err = RPC_SYSTEMERROR;
+		return -1;
+	}
+
+	*err = RPC_SUCCESS;
+	return sock;
+}
+
+/*
  * Ping the server at the given address/tag
  */
 static int
@@ -3250,7 +3350,7 @@ ni_ping(u_long address, ni_name tag)
 	struct sockaddr_in sin;
 	struct timeval tv, total;
 	enum clnt_stat stat;
-	int sock;
+	int sock, err;
 	nibind_getregister_res res;
 	CLIENT *cl;
 
@@ -3258,46 +3358,50 @@ ni_ping(u_long address, ni_name tag)
 	sin.sin_port = 0;
 	sin.sin_addr.s_addr = address;
 	bzero(sin.sin_zero, sizeof(sin.sin_zero));
-	sock = socket_open(&sin, NIBIND_PROG, NIBIND_VERS);
-	if (sock < 0) return 0;
+	err = RPC_SUCCESS;
+
+	sock = ni_ping_socket_open(&sin, NIBIND_PROG, NIBIND_VERS, &err);
+	if (sock < 0) return err;
 
 	tv.tv_sec = PING_TIMEOUT_SEC;
 	tv.tv_usec = PING_TIMEOUT_USEC;
-
+	
 	total.tv_sec = PING_CALL_SEC;
 	total.tv_usec = PING_CALL_USEC;
-
+	
 	cl = clntudp_create(&sin, NIBIND_PROG, NIBIND_VERS, tv, &sock);
 	if (cl == NULL)
 	{
+		syslog(LOG_DEBUG, "ni_ping: %s", clnt_spcreateerror("clntudp_create"));
 		socket_close(sock);
-		return 0;
+		return RPC_FAILED;
 	}
 
-	stat = clnt_call(cl, NIBIND_GETREGISTER, xdr_ni_name, &tag, xdr_nibind_getregister_res, &res, total);
+	stat = clnt_call(cl, NIBIND_GETREGISTER, (void *)xdr_ni_name, &tag, (void *)xdr_nibind_getregister_res, &res, total);
 	clnt_destroy(cl);
 	socket_close(sock);
 
-	if (stat != RPC_SUCCESS) return 0;
-	if (res.status != NI_OK) return 0;
+	if (stat != RPC_SUCCESS) return stat;
+	if (res.status != NI_OK) return RPC_PROGNOTREGISTERED;
 
 	/*
 	 * Actually talk to parent during ni_ping
 	 */
 	sin.sin_port = htons(res.nibind_getregister_res_u.addrs.udp_port);
 	sock = socket_open(&sin, NI_PROG, NI_VERS);
-	if (sock < 0) return 0;
+	if (sock < 0) return RPC_SYSTEMERROR;
 
 	cl = clntudp_create(&sin, NI_PROG, NI_VERS, tv, &sock);
 	if (cl == NULL)
 	{
+		syslog(LOG_DEBUG, "ni_ping: %s", clnt_spcreateerror("clntudp_create"));
 		socket_close(sock);
-		return 0;
+		return RPC_FAILED;
 	}
 
-	stat = clnt_call(cl, _NI_PING, xdr_void, (void *)NULL, xdr_void, (void *)NULL, total);
+	stat = clnt_call(cl, _NI_PING, (void *)xdr_void, (void *)NULL, (void *)xdr_void, (void *)NULL, total);
 	clnt_destroy(cl);
 	socket_close(sock);
 
-	return (stat == RPC_SUCCESS);
+	return stat;
 }

@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -50,7 +49,8 @@
 
 #define DNS_PRIVATE_HANDLE_TYPE_SUPER 0
 #define DNS_PRIVATE_HANDLE_TYPE_PLAIN 1
-#define DNS_DEFAULT_RECEIVE_SIZE 1024
+#define DNS_DEFAULT_RECEIVE_SIZE 8192
+#define DNS_MAX_RECEIVE_SIZE 65536
 
 #define SDNS_DEFAULT_STAT_LATENCY 10
 
@@ -74,7 +74,6 @@
 #define INET_NTOP_AF_INET6_OFFSET 8
 
 extern void res_client_close(res_state res);
-extern res_state res_client_open(char *path);
 extern int __res_nquery(res_state statp, const char *name, int class, int type, u_char *answer, int anslen);
 static pthread_mutex_t _dnsPrintLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -174,7 +173,7 @@ _dns_insert_cname(char *s, char *p)
 }
 
 static char *
-_dns_parse_string(const char *p, char **x, uint32_t *remaining)
+_dns_parse_string(const char *p, char **x, int32_t *remaining)
 {
 	char *str;
 	uint8_t len;
@@ -192,17 +191,20 @@ _dns_parse_string(const char *p, char **x, uint32_t *remaining)
 	memmove(str, *x, len);
 	str[len] = '\0';
 	*x += len;
+	
 	return str;
 }
 
 static char *
-_dns_parse_domain_name(const char *p, char **x, uint32_t *remaining)
+_dns_parse_domain_name(const char *p, char **x, int32_t *remaining)
 {
 	uint8_t *v8;
 	uint16_t *v16, skip;
 	uint16_t i, j, dlen, len;
 	int more, compressed;
 	char *name, *start, *z;
+
+	if (*remaining < 1) return NULL;
 
 	z = *x + *remaining;
 	start = *x;
@@ -254,6 +256,7 @@ _dns_parse_domain_name(const char *p, char **x, uint32_t *remaining)
 		}
 
 		*x += 1;
+
 		if (dlen > 0)
 		{
 			len += dlen;
@@ -271,6 +274,7 @@ _dns_parse_domain_name(const char *p, char **x, uint32_t *remaining)
 			name[j++] = **x;
 			*x += 1;
 		}
+
 		name[j] = '\0';
 		if (compressed == 0) skip += (dlen + 1);
 		
@@ -301,19 +305,22 @@ _dns_parse_domain_name(const char *p, char **x, uint32_t *remaining)
 	}
 
 	*x = start + skip;
+	*remaining -= skip;
 
 	return name;
 }
 
 dns_resource_record_t *
-_dns_parse_resource_record_internal(const char *p, char **x, uint32_t *remaining)
+_dns_parse_resource_record_internal(const char *p, char **x, int32_t *remaining)
 {
 	uint32_t size, bx, mi;
 	uint16_t rdlen;
 	uint8_t byte, i;
 	dns_resource_record_t *r;
 	char *eor;
-
+	
+	if (*remaining < 1) return NULL;
+	
 	r = (dns_resource_record_t *)calloc(1, sizeof(dns_resource_record_t));
 
 	r->name = _dns_parse_domain_name(p, x, remaining);
@@ -333,6 +340,8 @@ _dns_parse_resource_record_internal(const char *p, char **x, uint32_t *remaining
 	r->dnsclass = _dns_parse_uint16(x);
 	r->ttl = _dns_parse_uint32(x);
 	rdlen = _dns_parse_uint16(x);
+
+	*remaining -= 10;
 
 	eor = *x;
 	r->data.A = NULL;
@@ -746,7 +755,7 @@ dns_resource_record_t *
 dns_parse_resource_record(const char *buf, uint32_t len)
 {
 	char *x;
-	uint32_t remaining;
+	int32_t remaining;
 
 	remaining = len;
 	x = (char *)buf;
@@ -754,12 +763,13 @@ dns_parse_resource_record(const char *buf, uint32_t len)
 }
 
 dns_question_t *
-_dns_parse_question_internal(const char *p, char **x, uint32_t *remaining)
+_dns_parse_question_internal(const char *p, char **x, int32_t *remaining)
 {
 	dns_question_t *q;
 	
 	if (x == NULL) return NULL;
 	if (*x == NULL) return NULL;
+	if (*remaining < 1) return NULL;
 
 	q = (dns_question_t *)calloc(1, sizeof(dns_question_t));
 
@@ -789,7 +799,7 @@ dns_question_t *
 dns_parse_question(const char *buf, uint32_t len)
 {
 	char *x;
-	uint32_t remaining;
+	int32_t remaining;
 
 	remaining = len;
 	x = (char *)buf;
@@ -803,7 +813,8 @@ dns_parse_packet(const char *p, uint32_t len)
 	dns_reply_t *r;
 	dns_header_t *h;
 	char *x;
-	uint32_t i, size, remaining;
+	uint32_t i, size;
+    int32_t remaining;
 
 	if (p == NULL) return NULL;
 	if (len < NS_HFIXEDSZ) return NULL;
@@ -1201,6 +1212,9 @@ dns_set_buffer_size(dns_handle_t d, uint32_t len)
 	}
 
 	dns->recvsize = len;
+	if (dns->recvsize > DNS_MAX_RECEIVE_SIZE) dns->recvsize = DNS_MAX_RECEIVE_SIZE;
+
+	if (dns->recvsize > 0) dns->recvbuf = malloc(dns->recvsize);
 }
 	
 uint32_t
@@ -1218,9 +1232,7 @@ dns_lookup(dns_handle_t d, const char *name, uint32_t class, uint32_t type)
 {
 	dns_private_handle_t *dns;
 	dns_reply_t *r;
-	int status, mymem;
-	char *buf;
-	uint32_t len;
+	int len;
 	struct sockaddr_storage *from;
 	uint32_t fromlen;
 
@@ -1228,38 +1240,29 @@ dns_lookup(dns_handle_t d, const char *name, uint32_t class, uint32_t type)
 	if (name == NULL) return NULL;
 	dns = (dns_private_handle_t *)d;
 
-	mymem = 0;
-	buf = dns->recvbuf;
-	len = dns->recvsize;
-	fromlen = sizeof(struct sockaddr_storage);
-
-	if (buf == NULL)
+	if (dns->recvbuf == NULL)
 	{
-		if (len == 0)
-		{
-			len = DNS_DEFAULT_RECEIVE_SIZE;
-			mymem = 1;
-		}
+		if (dns->recvsize == 0) dns->recvsize = DNS_DEFAULT_RECEIVE_SIZE;
 
-		buf = malloc(len);
-		if (buf == NULL) return NULL;
-
-		if (mymem == 0) dns->recvbuf = buf;
+		dns->recvbuf = malloc(dns->recvsize);
+		if (dns->recvbuf == NULL) return NULL;
 	}
-
+	
+	fromlen = sizeof(struct sockaddr_storage);
 	from = (struct sockaddr_storage *)calloc(1, sizeof(struct sockaddr_storage));
-	status = dns_search(dns, name, class, type, buf, len, (struct sockaddr *)from, &fromlen);
-	if (status <= 0)
+
+	len = dns_search(dns, name, class, type, dns->recvbuf, dns->recvsize, (struct sockaddr *)from, &fromlen);
+	if (len <= 0)
 	{
-		if (mymem != 0) free(buf);
 		free(from);
 		return NULL;
 	}
 
-	r = dns_parse_packet(buf, len);
-	if (mymem != 0) free(buf);
+	r = dns_parse_packet(dns->recvbuf, len);
 
-	r->server = (struct sockaddr *)from;
+	if (r == NULL) free(from);
+	else r->server = (struct sockaddr *)from;
+
 	return r;
 }
 
@@ -1900,8 +1903,11 @@ _pdns_print_handle(pdns_handle_t *pdns, FILE *f)
 	r = pdns->res;
 	if (r == NULL) return;
 
-	if (r->defdname[0] == '\0') fprintf(f, "Domain: -no default name-\n");
-	else fprintf(f, "Domain: %s\n", r->defdname);
+	if (r->defdname[0] != '\0') fprintf(f, "Domain: %s\n", r->defdname);
+	fprintf(f, "Search Order: %d\n", pdns->search_order);
+	fprintf(f, "Total Timeout: %d\n", pdns->total_timeout);
+	fprintf(f, "Retry Timeout: %d\n", pdns->res->retrans);
+	fprintf(f, "Retry Attempts: %d\n", pdns->res->retry);
 
 	fprintf(f, "Server%s:\n", (r->nscount == 1) ? "" : "s");
 	for (i = 0; i < r->nscount; i++)
@@ -1913,11 +1919,11 @@ _pdns_print_handle(pdns_handle_t *pdns, FILE *f)
 		fprintf(f, "\n");
 	}
 
-	if ((r->dnsrch[0] != NULL) && (r->dnsrch[0][0] != '\0'))
+	if (pdns->search_count > 0)
 	{
 		fprintf(f, "Search List:\n");
-		for (i = 0; r->dnsrch[i] != NULL; i++)
-			fprintf(f, "  %u: %s\n", i, r->dnsrch[i]);
+		for (i = 0; i < pdns->search_count; i++)
+			fprintf(f, "  %u: %s\n", i, pdns->search_list[i]);
 	}
 
 	if (r->sort_list[0].addr.s_addr != 0)
@@ -1945,7 +1951,7 @@ _sdns_print_handle(sdns_handle_t *sdns, FILE *f)
 		return;
 	}
 
-	fprintf(f, "DNS default (/etc/resolv.conf)\n");
+	fprintf(f, "DNS default\n");
 	_pdns_print_handle(sdns->dns_default, f);
 	fprintf(f, "\n");
 	

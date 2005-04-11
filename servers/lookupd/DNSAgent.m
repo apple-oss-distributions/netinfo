@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -53,6 +52,7 @@
 #import <string.h>
 #import <libc.h>
 #import <dns_util.h>
+#import <dns_private.h>
 #import <ifaddrs.h>
 
 #define DNS_FLAGS_QR_MASK  0x8000
@@ -78,8 +78,7 @@
 
 #define RFC_2782
 
-#define DNS_BUFFER_SIZE 8192
-#define DNS_BASE_64_BUFFER_SIZE 11432
+#define DNS_DEFAULT_BUFFER_SIZE 8192
 
 #define IP6_DNS_ZONE "ip6.arpa."
 
@@ -87,8 +86,6 @@ extern char *nettoa(unsigned long);
 extern void __dns_open_notify();
 
 static const char hexchar[] = "0123456789abcdef";
-
-#ifdef DEBUG
 
 static char *_log_status_string(dns_reply_t *r)
 {
@@ -167,13 +164,13 @@ log_reply(dns_reply_t *r)
 
 	if (r == NULL)
 	{
-		syslog(LOG_ERR, "*** NULL DNS REPLY ***");
+		system_log(LOG_ERR, "*** NULL DNS REPLY ***");
 		return;
 	}
 
 	h = r->header;
 
-	syslog(LOG_ERR, "*** DNS: %s/%u/%s/%s/%s/%s%s%s%s/%s/%hu %hu %hu %hu",
+	system_log(LOG_ERR, "*** DNS: %s/%u/%s/%s/%s/%s%s%s%s/%s/%hu %hu %hu %hu",
 		_log_server_string(r->server), h->xid, _log_status_string(r), _log_qr_string(h), _log_opcode_string(h),
 		_log_bool(h->flags & DNS_FLAGS_AA), _log_bool(h->flags & DNS_FLAGS_TC), 
 		_log_bool(h->flags & DNS_FLAGS_RD), _log_bool(h->flags & DNS_FLAGS_RA),
@@ -184,18 +181,7 @@ log_reply(dns_reply_t *r)
 void
 log_query(char *name, u_int32_t class, u_int32_t type)
 {
-	syslog(LOG_ERR, "??? DNS: %s %s %s", name, dns_class_string(class), dns_type_string(type));
-}
-#endif DEBUG
-
-int
-msg_callback(int priority, char *msg)
-{
-#ifdef DEBUG
-	priority = LOG_ERR;
-#endif
-	system_log(priority, msg);
-	return 0;
+	system_log(LOG_ERR, "??? DNS: %s %s %s", name, dns_class_string(class), dns_type_string(type));
 }
 
 static char *
@@ -270,8 +256,8 @@ reverse_ipv4(char *v4)
 	if (v4 == NULL) return NULL;
 
 	if (inet_aton(v4, &s) == 0) return NULL;
-	
-	ab.a = ntohl(s.s_addr);
+
+	ab.a = s.s_addr;
 
 	asprintf(&p, "%u.%u.%u.%u.in-addr.arpa.", ab.b[3], ab.b[2], ab.b[1], ab.b[0]);
 	return p;
@@ -367,7 +353,7 @@ alt_ntoa(int32_t alt)
 
 	frac = alt % 100;
 	m = (alt / 100) * sign;
-	
+
 	asprintf(&p, "%d.%.2d", m, frac);
 	return p;
 }
@@ -408,19 +394,32 @@ precsize_ntoa(u_int8_t prec)
 	DNSAgent *agent;
 
 	agent = [super alloc];
-	system_log(LOG_DEBUG, "Allocated DNSAgent 0x%08x\n", (int)agent);
+	system_log(LOG_DEBUG, "Allocated DNSAgent 0x%08x", (int)agent);
 	return agent;
 }
 
 - (LUAgent *)initWithArg:(char *)arg
 {
+	LUDictionary *config;
+
 	[super initWithArg:arg];
+
+	config = [configManager configForAgent:"DNSAgent" fromConfig:[configManager config]];
+	buffersize = [configManager intForKey:"BufferSize" dict:config default:DNS_DEFAULT_BUFFER_SIZE];
+	dnsDebug = [configManager boolForKey:"Debug" dict:config default:NO];
+
+	if (agent_debug_enabled) dnsDebug = YES;
 
 	syslock_lock(rpcLock);
 	/* DNS API */
 	__dns_open_notify();
 	dns = dns_open(NULL);
+	if ((dns != NULL) && (dns->sdns != NULL) && aaaa_cutoff_enabled) dns->sdns->flags |= DNS_FLAG_OK_TO_SKIP_AAAA;
 	syslock_unlock(rpcLock);
+
+	if (dnsDebug) dns_set_debug(dns, 1);
+
+	dns_set_buffer_size(dns, buffersize);
 
 	if (dns == NULL)
 	{
@@ -447,7 +446,7 @@ precsize_ntoa(u_int8_t prec)
 	if (stats != nil) [stats release];
 	/* DNS API */
 	dns_free(dns);
-	system_log(LOG_DEBUG, "Deallocated DNSAgent 0x%08x\n", (int)self);
+	system_log(LOG_DEBUG, "Deallocated DNSAgent 0x%08x", (int)self);
 	[super dealloc];
 }
 
@@ -489,8 +488,11 @@ precsize_ntoa(u_int8_t prec)
 	switch (r->dnstype)
 	{
 		case ns_t_a:
+			if (inet_ntop(AF_INET, &(r->data.A->addr), str, 32) == NULL) break;
+
 			[item setValue:r->name forKey:"name"];
-			[item setValue:inet_ntoa(r->data.A->addr) forKey:"ip_address"];
+			[item setValue:str forKey:"ip_address"];
+
 			if (iface > 0)
 			{
 				asprintf(&ifname, "%u", iface);
@@ -581,7 +583,7 @@ precsize_ntoa(u_int8_t prec)
 			[item setValue:str forKey:"preference"];
 			[item setValue:r->data.MX->name forKey:"mail_exchanger"];
 			break;
-			
+
 		case ns_t_txt:
 			[item setValue:r->name forKey:"name"];
 			for (i=0; i<r->data.TXT->string_count; i++)
@@ -750,8 +752,10 @@ precsize_ntoa(u_int8_t prec)
 
 		if (r->answer[i]->dnstype == ns_t_a)
 		{
+			if (inet_ntop(AF_INET,&(r->answer[i]->data.A->addr), scratch, 256) == NULL) continue;
+
 			got_data++;
-			[host mergeValue:inet_ntoa(r->answer[i]->data.A->addr) forKey:"ip_address"];
+			[host mergeValue:scratch forKey:"ip_address"];
 		}
 
 		else if (r->answer[i]->dnstype == ns_t_aaaa)
@@ -807,7 +811,7 @@ precsize_ntoa(u_int8_t prec)
 		 */
 		if (cname_count > 0) realName = lowerCase([host valueForKey:"cname"]);
 		else realName = lowerCase(r->answer[0]->name);
-		
+
 		[host mergeValue:realName forKey:"name"];
 	}
 
@@ -821,7 +825,7 @@ precsize_ntoa(u_int8_t prec)
 	{
 		domainName = postfix(realName, '.');
 		if (domainName != NULL) [host setValue:domainName forKey:"_lookup_DNS_domain"];
-	
+
 		freeString(realName);
 		freeString(domainName);
 	}
@@ -849,13 +853,14 @@ precsize_ntoa(u_int8_t prec)
 	if (k == NULL) return nil;
 
 	/* DNS API */
-#ifdef DEBUG
-	log_query(k, ns_c_in, t);
-#endif
+
+	if (dnsDebug) dns_set_debug(dns, 1);
+	else dns_set_debug(dns, 0);
+
+	if (dnsDebug) log_query(k, ns_c_in, t);
 	r = dns_lookup(dns, k, ns_c_in, t);
-#ifdef DEBUG
-	log_reply(r);
-#endif
+	if (dnsDebug) log_reply(r);
+
 	host = [self dictForDNSReply:r];
 	dns_free_reply(r);
 
@@ -879,17 +884,20 @@ precsize_ntoa(u_int8_t prec)
 		ab.b[3], ab.b[2], ab.b[1], ab.b[0]);
 
 	/* DNS API */
-#ifdef DEBUG
-	log_query(name, ns_c_in, ns_t_ptr);
-#endif
+	if (dnsDebug) dns_set_debug(dns, 1);
+	else dns_set_debug(dns, 0);
+
+	if (dnsDebug) log_query(name, ns_c_in, ns_t_ptr);
 	r = dns_lookup(dns, name, ns_c_in, ns_t_ptr);
-#ifdef DEBUG
-	log_reply(r);
-#endif
+	if (dnsDebug) log_reply(r);
+
 	host = [self dictForDNSReply:r];
 	dns_free_reply(r);
 
-	if (host != nil) [host mergeValue:inet_ntoa(*addr) forKey:"ip_address"];
+	if ((host != nil) && (inet_ntop(AF_INET, addr, name, 64) != NULL))
+	{
+		[host mergeValue:name forKey:"ip_address"];
+	}
 
 	return [self stamp:host];
 }
@@ -903,13 +911,13 @@ precsize_ntoa(u_int8_t prec)
 	char str[64];
 
 	/* DNS API */
-#ifdef DEBUG
-	log_query(name, ns_c_in, ns_t_ptr);
-#endif
+	if (dnsDebug) dns_set_debug(dns, 1);
+	else dns_set_debug(dns, 0);
+
+	if (dnsDebug) log_query(name, ns_c_in, ns_t_ptr);
 	r = dns_lookup(dns, name, ns_c_in, ns_t_ptr);
-#ifdef DEBUG
-	log_reply(r);
-#endif
+	if (dnsDebug) log_reply(r);
+
 	net = [self dictForDNSReply:r];
 	dns_free_reply(r);
 
@@ -931,7 +939,7 @@ precsize_ntoa(u_int8_t prec)
 
 	snprintf(str, 64, "%s.%s.%s.%s", l[3], l[2], l[1], l[0]);
 	freeList(l);
-	
+
 	longName = [net valueForKey:"ptr_name"];
 	shortName = prefix(longName, '.');
 	domainName = postfix(longName, '.');
@@ -967,19 +975,23 @@ precsize_ntoa(u_int8_t prec)
 		ab.b[3], ab.b[2], ab.b[1], ab.b[0]);
 
 	/* DNS API */
-#ifdef DEBUG
-	log_query(name, ns_c_in, ns_t_ptr);
-#endif
+	if (dnsDebug) dns_set_debug(dns, 1);
+	else dns_set_debug(dns, 0);
+
+	if (dnsDebug) log_query(name, ns_c_in, ns_t_ptr);
 	r = dns_lookup(dns, name, ns_c_in, ns_t_ptr);
-#ifdef DEBUG
-	log_reply(r);
-#endif
+	if (dnsDebug) log_reply(r);
+
 	net = [self dictForDNSReply:r];
 	dns_free_reply(r);
 
 	if (net == nil) return nil;
 
-	[net mergeValue:inet_ntoa(*addr) forKey:"ip_address"];
+	if (inet_ntop(AF_INET, addr, name, 64) != NULL)
+	{
+		[net mergeValue:name forKey:"ip_address"];
+	}
+
 	[net removeKey:"ptr_name"];
 
 	return [self stamp:net];
@@ -1055,6 +1067,12 @@ precsize_ntoa(u_int8_t prec)
 			}
 			if (streq(key, "namev6"))
 			{
+				item = [self hostWithKey:val dnstype:ns_t_aaaa];
+				if (item != nil) [item mergeValue:val forKey:"name"];
+				return item;
+			}
+			if (streq(key, "namev46"))
+			{
 				item = [self hostWithKey:val dnstype:ns_t_a];
 				[item mergeValue:val forKey:"name"];
 				ttl1 = [item unsignedLongForKey:"_lookup_DNS_time_to_live"];
@@ -1119,13 +1137,13 @@ precsize_ntoa(u_int8_t prec)
 	int i, len;
 
 	/* SDNS API */
-#ifdef DEBUG
-	log_query(q->name, q->class, q->type);
-#endif
+	if (dnsDebug) dns_set_debug(dns, 1);
+	else dns_set_debug(dns, 0);
+
+	if (dnsDebug) log_query(q->name, q->dnsclass, q->dnstype);
 	r = dns_lookup(dns, q->name, q->dnsclass, q->dnstype);
-#ifdef DEBUG
-	log_reply(r);
-#endif
+	if (dnsDebug) log_reply(r);
+
 	sub = [self arrayForDNSReply:r];
 
 	dns_free_reply(r);
@@ -1153,8 +1171,8 @@ precsize_ntoa(u_int8_t prec)
 
 	if (cat != LUCategoryHost) return nil;
 	if (pattern == nil) return nil;
-	
-	q.dnsclass = ns_c_in;	
+
+	q.dnsclass = ns_c_in;
 
 	/*
 	 * search will be based on one of the following keys
@@ -1197,11 +1215,11 @@ precsize_ntoa(u_int8_t prec)
 	if (name != NULL)
 	{
 		if ((protocol != NULL) && (service == NULL)) return nil;
-		
+
 		if (service != NULL)
 		{
 			if (protocol == NULL) return nil;
-			
+
 #ifdef RFC_2782
 			asprintf(&qname, "_%s._%s.%s", service, protocol, name);
 #else
@@ -1269,7 +1287,7 @@ precsize_ntoa(u_int8_t prec)
 		if (fixup & FIX_IPV4) [item mergeValue:ip forKey:"ip_address"];
 		if (fixup & FIX_IPV6) [item mergeValue:ipv6 forKey:"ipv6_address"];
 	}
-	
+
 	list = [all filter:pattern];
 	[all release];
 
@@ -1286,12 +1304,12 @@ precsize_ntoa(u_int8_t prec)
 {
 	LUDictionary *item;
 	char *name, *cclass, *ctype, *proxy;
-	char buf[DNS_BUFFER_SIZE], b64[DNS_BASE_64_BUFFER_SIZE];
+	char *buf, *b64;
 	u_int16_t class, type;
 	int32_t test;
 	struct sockaddr *from;
 	u_int32_t do_search, fromlen, offset;
-	int32_t len;
+	int32_t len, b64len;
 
 	name = [dict valueForKey:"name"];
 	if (name == NULL) return NO;
@@ -1305,31 +1323,37 @@ precsize_ntoa(u_int8_t prec)
 	type = atoi(ctype);
 
 	do_search = [dict unsignedLongForKey:"search"];
-	
+
 	fromlen = sizeof(struct sockaddr_storage);
 	from = (struct sockaddr *)calloc(1, fromlen);
+
+	buf = calloc(1, buffersize);
 
 	len = -1;
 	if (do_search == 0)
 	{
-		len = dns_query(dns, name, class, type, buf, DNS_BUFFER_SIZE, from, &fromlen);
+		len = dns_query(dns, name, class, type, buf, buffersize, from, &fromlen);
 	}
 	else
 	{
-		len = dns_search(dns, name, class, type, buf, DNS_BUFFER_SIZE, from, &fromlen);
+		len = dns_search(dns, name, class, type, buf, buffersize, from, &fromlen);
 	}
 
 	if (len < 0)
 	{
 		free(from);
+		free(buf);
 		return NO;
 	}
 
 	proxy = [dict valueForKey:"proxy_id"];
 
 	item = [[LUDictionary alloc] initTimeStamped];
-	
-	test = b64_ntop(buf, len, b64, DNS_BASE_64_BUFFER_SIZE);
+
+	b64len = 2 * buffersize;
+	b64 = calloc(1, b64len);
+
+	test = b64_ntop(buf, len, b64, b64len);
 
 	if (proxy != NULL) [item setValue:proxy forKey:"proxy_id"];
 	[item setValue:name forKey:"name"];
@@ -1339,17 +1363,18 @@ precsize_ntoa(u_int8_t prec)
 
 	offset = 4;
 	if (from->sa_family == AF_INET6) offset = 8;
-	inet_ntop(from->sa_family, (char *)(from) + offset, buf, DNS_BUFFER_SIZE);
+	inet_ntop(from->sa_family, (char *)(from) + offset, buf, buffersize);
 	free(from);
 
 	[item setValue:buf forKey:"server"];
 
-#ifdef DEBUG
+	if (dnsDebug) 
 	{
-		char d_buf[DNS_BUFFER_SIZE];
+		char *d_buf;
 		dns_reply_t *d_r;
 
-		test = b64_pton(b64, d_buf, DNS_BUFFER_SIZE);
+		d_buf = calloc(1, buffersize);
+		test = b64_pton(b64, d_buf, buffersize);
 		if (test < 0) 
 		{
 			fprintf(stderr, "b64_pton failed!\n");
@@ -1367,9 +1392,12 @@ precsize_ntoa(u_int8_t prec)
 				dns_free_reply(d_r);
 			}
 		}
-	}
-#endif
 
+		free(d_buf);
+	}
+
+	free(buf);
+	free(b64);
 	return item;
 }
 

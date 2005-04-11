@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -48,23 +47,27 @@
 #import "DNSAgent.h"
 #import "NILAgent.h"
 #import <NetInfo/dsutil.h>
-#import <NetInfo/ni_shared.h>
 #import "sys.h"
 #import <sys/types.h>
 #import <sys/param.h>
 #import <unistd.h>
 #import <string.h>
 #import <libc.h>
+#import <netdb.h>
+#import <sys/socket.h>
+#import <netinet/in.h>
+#import <arpa/inet.h>
+#import <net/if.h>
+#import <ifaddrs.h>
 
 #define forever for(;;)
 
-extern int gethostname(char *, int);
 extern sys_port_type server_port;
 extern sys_port_type _lookupd_port(sys_port_type);
 extern int _lookup_link();
 
 @implementation Controller
-	
+
 /*
  * Server runs in this loop to answer requests
  */
@@ -90,7 +93,7 @@ extern int _lookup_link();
 			system_log(LOG_NOTICE, "Server status = %s (%d)", sys_strerror(status), status);
 			continue;
 		}
-		
+
 		syslock_lock(threadCountLock);
 		idleThreads--;
 		if ((idleThreads == 0) && (threadCount < maxThreads))
@@ -168,6 +171,30 @@ extern int _lookup_link();
 	global = [configManager configGlobal:configurationArray];
 
 	debug_enabled = [configManager boolForKey:"Debug" dict:global default:debug_enabled];
+	trace_enabled = [configManager boolForKey:"Trace" dict:global default:trace_enabled];
+
+	aaaa_cutoff_enabled = [configManager boolForKey:"AAAACutoff" dict:global default:aaaa_cutoff_enabled];
+
+	str = [configManager stringForKey:"GAISearch" dict:global default:NULL];
+	if (str != NULL)
+	{
+		if (!strcasecmp(str, "Parallel")) gai_pref = GAI_P;
+		else if (!strcasecmp(str, "Default")) gai_pref = GAI_P;
+		else if (!strcasecmp(str, "P")) gai_pref = GAI_P;
+		else if (!strcasecmp(str, "IPv4")) gai_pref = GAI_4;
+		else if (!strcasecmp(str, "4")) gai_pref = GAI_4;
+		else if (!strcasecmp(str, "IPv6")) gai_pref = GAI_6;
+		else if (!strcasecmp(str, "6")) gai_pref = GAI_6;
+		else if (!strcasecmp(str, "Serial")) gai_pref = GAI_S46;
+		else if (!strcasecmp(str, "Serial46")) gai_pref = GAI_S46;
+		else if (!strcasecmp(str, "46")) gai_pref = GAI_S46;
+		else if (!strcasecmp(str, "Serial64")) gai_pref = GAI_S64;
+		else if (!strcasecmp(str, "64")) gai_pref = GAI_S64;
+		free(str);
+	}
+
+	gai_wait = [configManager intForKey:"GAIWait" dict:global default:gai_wait];
+
 	if (debug_enabled)
 	{
 		statistics_enabled = YES;
@@ -208,6 +235,59 @@ extern int _lookup_link();
 	[configurationArray release];
 }
 
+- (void)initNetAddrList
+{
+	struct ifaddrs *ifa, *ifap;
+	sa_family_t family;
+	struct sockaddr_in6 *sin6;
+	struct sockaddr_in *sin4;
+	char buf[128];
+	BOOL isLinkLocal, isSiteLocal, isLoopback;
+
+	if (getifaddrs(&ifa) != 0) return;
+
+	for (ifap = ifa; ifap != NULL; ifap = ifap->ifa_next)
+	{
+		family = ifap->ifa_addr->sa_family;
+		if (family != AF_INET && family != AF_INET6) continue;
+		if (family == AF_INET6)
+		{
+			sin6 = (struct sockaddr_in6 *)(ifap->ifa_addr);
+			isLinkLocal = (IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr) != 0);
+			isSiteLocal = (IN6_IS_ADDR_SITELOCAL(&sin6->sin6_addr) != 0);
+			isLoopback = (IN6_IS_ADDR_LOOPBACK(&sin6->sin6_addr) != 0);
+
+			if (isLinkLocal || isSiteLocal)
+			{
+				sin6->sin6_scope_id = ntohs(*(u_int16_t *)&sin6->sin6_addr.s6_addr[2]);
+				sin6->sin6_addr.s6_addr[2] = 0;
+				sin6->sin6_addr.s6_addr[3] = 0;
+			}
+
+			/*
+			 * Anything other than link-local or loopback is considered routable.
+			 * If we have routable IPv6 addresees, we want to do AAAA queries in DNS.
+			 */
+			if ((!isLinkLocal) && (!isLoopback)) aaaa_cutoff_enabled = NO;
+		}
+
+		if (family == AF_INET)
+		{
+			sin4 = (struct sockaddr_in *)(ifap->ifa_addr);
+			if (inet_ntop(AF_INET, (void *)&(sin4->sin_addr), buf, sizeof(buf)) == NULL) continue;
+		}
+		else
+		{
+			sin6 = (struct sockaddr_in6 *)(ifap->ifa_addr);
+			if (inet_ntop(AF_INET6, (void *)&(sin6->sin6_addr), buf, sizeof(buf)) == NULL) continue;
+		}
+
+		netAddrList = appendString(buf, netAddrList);
+	}
+
+	freeifaddrs(ifa);
+}
+
 - (id)initWithName:(char *)name
 {
 	DNSAgent *dns;
@@ -215,6 +295,7 @@ extern int _lookup_link();
 	[super init];
 
 	dnsSearchList = NULL;
+	netAddrList = NULL;
 
 	controller = self;
 
@@ -235,13 +316,18 @@ extern int _lookup_link();
 
 	statistics = [[LUDictionary alloc] init];
 	[statistics setBanner:"lookupd statistics"];
-	
-	[statistics setValue:_PROJECT_BUILD_INFO_ forKey:"# build"];
-	[statistics setValue:_PROJECT_VERSION_    forKey:"# version"];
+
+	[statistics setValue:_PROJECT_BUILD_INFO_ forKey:"# Build"];
+	[statistics setValue:_PROJECT_VERSION_    forKey:"# Version"];
 
 	[self newAgent:[CacheAgent class] name:"CacheAgent"];
 	[self newAgent:[DNSAgent class] name:"DNSAgent"];
 	[self newAgent:[NILAgent class] name:"NILAgent"];
+
+	/* 
+	 * Build a list of local network addresses
+	 */
+	[self initNetAddrList];
 
 	[self initConfig];
 
@@ -267,6 +353,11 @@ extern int _lookup_link();
 - (char **)dnsSearchList
 {
 	return dnsSearchList;
+}
+
+- (char **)netAddrList
+{
+	return netAddrList;
 }
 
 - (void)dealloc
@@ -298,6 +389,9 @@ extern int _lookup_link();
 	freeList(agentNames);
 	agentNames = NULL;
 	free(agents);
+
+	freeList(netAddrList);
+	netAddrList = NULL;
 
 	[super dealloc];
 }
@@ -381,7 +475,6 @@ extern int _lookup_link();
 {
 	int i, len, idleServerCount;
 
-	[cacheAgent sweepCache];
 	syslock_lock(serverLock);
 
 	[server setIsIdle:YES];

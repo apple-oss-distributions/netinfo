@@ -3,22 +3,21 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.0 (the 'License').  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License."
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -49,11 +48,13 @@
 #import "_lu_types.h"
 #import <netdb.h>
 #import <sys/socket.h>
+#import <sys/param.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
 #import <strings.h>
 #import <NetInfo/dsutil.h>
 #import <stdio.h>
+#import <time.h>
 
 /* 2 second timeout on sends */
 #define TIMEOUT_MSECONDS (2000)
@@ -93,7 +94,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryUser;
-	
+
 	/*
 	 * getpwent-A (returns BSD4.4 data)
 	 */
@@ -102,7 +103,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryUser;
-	
+
 	/*
 	 * getpwuid (returns BSD4.3 data)
 	 */
@@ -111,7 +112,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valInt;
 	proc_helper[i].key = "uid";
 	proc_helper[i].cat = LUCategoryUser;
-	
+
 	/*
 	 * getpwuid_A (returns BSD4.4 data)
 	 */
@@ -129,7 +130,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valString;
 	proc_helper[i].key = "name";
 	proc_helper[i].cat = LUCategoryUser;
-	
+
 	/*
 	 * getpwname_A (returns BSD4.4 data)
 	 */
@@ -147,7 +148,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryGroup;
-	
+
 	/*
 	 * getgrgid
 	 */
@@ -175,7 +176,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryHost;
 	proc_helper[i].encoder = @selector(encodeHost:intoXdr:);
-	
+
 	/*
 	 * gethostbyname
 	 */
@@ -211,7 +212,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryNetwork;
-	
+
 	/*
 	 * getnetbyname
 	 */
@@ -238,7 +239,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryService;
-	
+
 	/*
 	 * getprotoent
 	 */
@@ -247,7 +248,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryProtocol;
-	
+
 	/*
 	 * getprotobyname
 	 */
@@ -274,7 +275,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryRpc;
-	
+
 	/*
 	 * getrpcbyname
 	 */
@@ -302,7 +303,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryMount;
-	
+
 	/*
 	 * getfsbyname
 	 */
@@ -321,7 +322,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryPrinter;
-	
+
 	/*
 	 * grdb_getbyname
 	 */
@@ -339,7 +340,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryBootparam;
-	
+
 	/*
 	 * bootparams_getbyname
 	 */
@@ -348,7 +349,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valString;
 	proc_helper[i].key = "name";
 	proc_helper[i].cat = LUCategoryBootparam;
-	
+
 	/*
 	 * bootp_getbyip
 	 */
@@ -375,7 +376,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valString;
 	proc_helper[i].key = "name";
 	proc_helper[i].cat = LUCategoryAlias;
-	
+
 	/*
 	 * alias_getent
 	 */
@@ -384,7 +385,7 @@ extern char *nettoa(u_int32_t net);
 	proc_helper[i].decoder = valNull;
 	proc_helper[i].key = NULL;
 	proc_helper[i].cat = LUCategoryAlias;
-	
+
 	return self;
 }
 
@@ -407,7 +408,7 @@ extern char *nettoa(u_int32_t net);
 	t = [Thread currentThread];
 	request = (lookup_request_msg *)[t data];
 	[t setData:NULL];
-	
+
 	/*
 	 * Use the MIG server to dispatch messages.
 	 * Server functions for the MIG interface are in lookup_proc.m
@@ -473,6 +474,8 @@ extern char *nettoa(u_int32_t net);
 	BOOL test;
 	char logString[512];
 	SEL aSel;
+	time_t tick;
+	struct tm gtime;
 
 	t = [Thread currentThread];
 	sprintf(logString, "%s", proc_name(procno));
@@ -549,7 +552,7 @@ extern char *nettoa(u_int32_t net);
 			free(val);
 			val = NULL;
 		}
-	
+
 		if (val == NULL)
 		{
 			system_log(LOG_DEBUG, "%s - can't decode lookup value", logString);
@@ -675,7 +678,7 @@ extern char *nettoa(u_int32_t net);
 				system_log(LOG_DEBUG, "%s - can't decode lookup value", logString);
 				return NO;
 			}
-	
+
 			system_log(LOG_DEBUG, "%s %s", logString, name);
 			if (streq(name, "config"))
 			{
@@ -799,7 +802,7 @@ extern char *nettoa(u_int32_t net);
 			name = NULL;
 			[self xdrInt:(test ? 1 : 0) buffer:outdata length:outlen];
 			return YES;
-	
+
 		case PROC_CHECKNETWAREENBL: /* NONSTANDARD */
 			system_log(LOG_DEBUG, "%s", logString);
 			test = [server isNetwareEnabled];
@@ -824,6 +827,11 @@ extern char *nettoa(u_int32_t net);
 			if (statistics == NULL) return NO;
 			sprintf(logString, "%u", [rover totalMemory]);
 			[statistics setValue:logString forKey:"# Total Memory"];
+			tick = time(NULL);
+			gmtime_r(&tick, &gtime);
+			sprintf(logString, "%d.%02d.%02d %02d:%02d:%02d UTC", gtime.tm_year + 1900, gtime.tm_mon + 1, gtime.tm_mday, gtime.tm_hour, gtime.tm_min, gtime.tm_sec);
+			[statistics setValue:logString forKey:"# Timestamp"];
+
 			test = [self xdrItem:statistics method:@selector(encodeDictionary:intoXdr:) buffer:outdata length:outlen];
 			return test;
 
@@ -958,7 +966,7 @@ extern char *nettoa(u_int32_t net);
 	{
 		strcat(opts, optsList[i]);
 		if (i < (count - 1)) strcat(opts, ",");
-	
+
 		if ((streq(optsList[i], "rw")) ||
 			(streq(optsList[i], "rq")) ||
 			(streq(optsList[i], "ro")) ||
@@ -1083,7 +1091,7 @@ extern char *nettoa(u_int32_t net);
 {
 	lu_xdr_t *outxdr;
 	int32_t status;
-	
+
 	outxdr = lu_xdr_alloc(0, 0);
 
 	status = lu_xdr_int_32(outxdr, &i);
@@ -1113,7 +1121,7 @@ extern char *nettoa(u_int32_t net);
 	int32_t status;
 
 	if (list == nil) return NO;
-	
+
 	outxdr = lu_xdr_alloc(0, 0);
 	count = [list count];
 
@@ -1157,7 +1165,7 @@ extern char *nettoa(u_int32_t net);
 	lu_xdr_int_32(outxdr, &count);
 
 	if (count == 0)
-	{		
+	{
 		*len = lu_xdr_getpos(outxdr);
 		*data = outxdr->buf;
 		free(outxdr);
@@ -1312,7 +1320,11 @@ extern char *nettoa(u_int32_t net);
 
 	ip.s_addr = i;
 	str = malloc(16);
-	sprintf(str, "%s", inet_ntoa(ip));
+	if (inet_ntop(AF_INET, &ip, str, 16) == NULL)
+	{
+		free(str);
+		return NULL;
+	}
 
 	return str;
 }
@@ -1341,7 +1353,7 @@ extern char *nettoa(u_int32_t net);
 	lu_xdr_free(inxdr);
 
 	str = malloc(64);
-	if (inet_ntop(AF_INET6, &(ip.__u6_addr.__u6_addr32[0]), str, 64) == NULL)
+	if (inet_ntop(AF_INET6, &ip, str, 64) == NULL)
 	{
 		free(str);
 		return NULL;
@@ -1568,7 +1580,7 @@ extern char *nettoa(u_int32_t net);
 		return NULL;
 	}
 
-	return item;	
+	return item;
 }
 
 - (char **)intAndStringFromBuffer:(char *)buf length:(int)len
